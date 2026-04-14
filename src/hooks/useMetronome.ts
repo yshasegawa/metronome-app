@@ -32,6 +32,7 @@ export function useMetronome() {
   const currentTickRef = useRef(0); // counts individual ticks (beat * subdivCount + subdivIndex)
   const schedulerTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isPlayingRef = useRef(false);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [bpm, setBpmState] = useState(120);
@@ -195,6 +196,31 @@ export function useMetronome() {
     }, autoBpmRef.current.intervalSeconds * 1000);
   }, []);
 
+  const acquireWakeLock = useCallback(async () => {
+    if (!('wakeLock' in navigator)) return;
+    try {
+      wakeLockRef.current = await navigator.wakeLock.request('screen');
+    } catch {
+      // 権限なし・非対応環境では無視
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(() => {
+    wakeLockRef.current?.release();
+    wakeLockRef.current = null;
+  }, []);
+
+  // ページが再表示されたとき（バックグラウンドから復帰）に再取得
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && isPlayingRef.current) {
+        acquireWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [acquireWakeLock]);
+
   const play = useCallback(() => {
     const ctx = getAudioContext();
     isPlayingRef.current = true;
@@ -205,7 +231,8 @@ export function useMetronome() {
     setCurrentBeat(0);
     if (timerRef.current.enabled && !timerRef.current.isFinished) startTimer();
     if (autoBpmRef.current.enabled) startAutoBpm();
-  }, [getAudioContext, scheduler, startTimer, startAutoBpm]);
+    acquireWakeLock();
+  }, [getAudioContext, scheduler, startTimer, startAutoBpm, acquireWakeLock]);
 
   const stop = useCallback(() => {
     isPlayingRef.current = false;
@@ -214,7 +241,8 @@ export function useMetronome() {
     if (autoBpmTimerRef.current) { clearInterval(autoBpmTimerRef.current); autoBpmTimerRef.current = null; }
     setIsPlaying(false);
     setCurrentBeat(-1);
-  }, []);
+    releaseWakeLock();
+  }, [releaseWakeLock]);
 
   const setBpm = useCallback((value: number) => {
     setBpmState(Math.min(240, Math.max(40, value)));
