@@ -83,20 +83,39 @@ export function useMetronome() {
     if (!ctx) return;
 
     const config = {
-      accent: { freq: 1200, duration: 0.06, gain: 0.9 },
-      beat:   { freq: 800,  duration: 0.04, gain: 0.6 },
-      subdiv: { freq: 600,  duration: 0.03, gain: 0.3 },
+      accent: { freqStart: 2800, freqEnd: 1600, duration: 0.055, gain: 1.4 },
+      beat:   { freqStart: 2200, freqEnd: 1200, duration: 0.04,  gain: 1.1 },
+      subdiv: { freqStart: 1800, freqEnd: 1000, duration: 0.025, gain: 0.6 },
     }[tickType];
 
+    // ノイズバースト（打撃感）
+    const bufferSize = ctx.sampleRate * 0.015;
+    const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+    const noiseSource = ctx.createBufferSource();
+    noiseSource.buffer = noiseBuffer;
+    const noiseGain = ctx.createGain();
+    noiseSource.connect(noiseGain);
+    noiseGain.connect(ctx.destination);
+    const noiseLevel = tickType === 'subdiv' ? 0.15 : 0.3;
+    noiseGain.gain.setValueAtTime(noiseLevel, time);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, time + 0.015);
+    noiseSource.start(time);
+    noiseSource.stop(time + 0.015);
+
+    // ピッチダウンするオシレーター（木琴的な打撃音）
     const oscillator = ctx.createOscillator();
     const gainNode = ctx.createGain();
     oscillator.connect(gainNode);
     gainNode.connect(ctx.destination);
 
-    oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(config.freq, time);
+    oscillator.type = 'triangle';
+    oscillator.frequency.setValueAtTime(config.freqStart, time);
+    oscillator.frequency.exponentialRampToValueAtTime(config.freqEnd, time + config.duration);
+
     gainNode.gain.setValueAtTime(0, time);
-    gainNode.gain.linearRampToValueAtTime(config.gain, time + 0.005);
+    gainNode.gain.linearRampToValueAtTime(config.gain, time + 0.002);
     gainNode.gain.exponentialRampToValueAtTime(0.001, time + config.duration);
 
     oscillator.start(time);
