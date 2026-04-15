@@ -14,9 +14,11 @@ export const SUBDIVISION_COUNT: Record<Subdivision, number> = {
 
 export interface TimerState {
   enabled: boolean;
+  loop: boolean;
   durationMinutes: number;
   remainingSeconds: number;
   isFinished: boolean;
+  lapCount: number;
 }
 
 export interface AutoBpmState {
@@ -43,9 +45,11 @@ export function useMetronome() {
   // Timer state
   const [timer, setTimer] = useState<TimerState>({
     enabled: false,
+    loop: false,
     durationMinutes: 5,
     remainingSeconds: 300,
     isFinished: false,
+    lapCount: 0,
   });
   const timerRef = useRef(timer);
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -156,6 +160,25 @@ export function useMetronome() {
     }
   }, [scheduleClick, beatsPerMeasure]);
 
+  const playTimerBeep = useCallback(() => {
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    for (let i = 0; i < 3; i++) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, now + i * 0.3);
+      gain.gain.setValueAtTime(0, now + i * 0.3);
+      gain.gain.linearRampToValueAtTime(0.7, now + i * 0.3 + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.3 + 0.2);
+      osc.start(now + i * 0.3);
+      osc.stop(now + i * 0.3 + 0.2);
+    }
+  }, []);
+
   const startTimer = useCallback(() => {
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     timerIntervalRef.current = setInterval(() => {
@@ -163,29 +186,22 @@ export function useMetronome() {
         if (!prev.enabled || prev.isFinished) return prev;
         const newRemaining = prev.remainingSeconds - 1;
         if (newRemaining <= 0) {
-          const ctx = audioCtxRef.current;
-          if (ctx) {
-            const now = ctx.currentTime;
-            for (let i = 0; i < 3; i++) {
-              const osc = ctx.createOscillator();
-              const gain = ctx.createGain();
-              osc.connect(gain);
-              gain.connect(ctx.destination);
-              osc.type = 'sine';
-              osc.frequency.setValueAtTime(880, now + i * 0.3);
-              gain.gain.setValueAtTime(0, now + i * 0.3);
-              gain.gain.linearRampToValueAtTime(0.7, now + i * 0.3 + 0.01);
-              gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.3 + 0.2);
-              osc.start(now + i * 0.3);
-              osc.stop(now + i * 0.3 + 0.2);
-            }
+          playTimerBeep();
+          if (prev.loop) {
+            // ループ: リセットして再スタート
+            return {
+              ...prev,
+              remainingSeconds: prev.durationMinutes * 60,
+              lapCount: prev.lapCount + 1,
+            };
+          } else {
+            return { ...prev, remainingSeconds: 0, isFinished: true };
           }
-          return { ...prev, remainingSeconds: 0, isFinished: true };
         }
         return { ...prev, remainingSeconds: newRemaining };
       });
     }, 1000);
-  }, []);
+  }, [playTimerBeep]);
 
   const startAutoBpm = useCallback(() => {
     if (autoBpmTimerRef.current) clearInterval(autoBpmTimerRef.current);
