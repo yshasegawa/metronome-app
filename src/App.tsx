@@ -23,6 +23,7 @@ function App() {
     play,
     stop,
     setBpm,
+    adjustBpm,
     setSubdivision,
     tapTempo,
     updateTimer,
@@ -87,6 +88,22 @@ function App() {
 
       {/* BPM Controls */}
       <div className="w-full max-w-md mb-6 space-y-3">
+        {/* BPM step buttons */}
+        <div className="flex justify-center gap-3">
+          <button
+            onClick={() => adjustBpm(-4)}
+            className="px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-lg border border-slate-600 hover:border-slate-500 transition-all active:scale-95"
+          >
+            −4
+          </button>
+          <button
+            onClick={() => adjustBpm(2)}
+            className="px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-lg border border-slate-600 hover:border-slate-500 transition-all active:scale-95"
+          >
+            +2
+          </button>
+        </div>
+
         <div className="flex items-center gap-4">
           <input
             type="range"

@@ -28,6 +28,24 @@ export interface AutoBpmState {
   maxBpm: number;
 }
 
+const STORAGE_KEY = 'metronome-settings';
+
+interface PersistedSettings {
+  bpm: number;
+  subdivision: Subdivision;
+  timer: Pick<TimerState, 'enabled' | 'loop' | 'durationMinutes'>;
+  autoBpm: AutoBpmState;
+}
+
+function loadSettings(): Partial<PersistedSettings> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
 export function useMetronome() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const nextBeatTimeRef = useRef(0);
@@ -36,31 +54,40 @@ export function useMetronome() {
   const isPlayingRef = useRef(false);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
+  const savedRef = useRef(loadSettings());
+
   const [isPlaying, setIsPlaying] = useState(false);
-  const [bpm, setBpmState] = useState(120);
+  const [bpm, setBpmState] = useState(() => savedRef.current.bpm ?? 120);
   const [currentBeat, setCurrentBeat] = useState(0);
-  const [subdivision, setSubdivisionState] = useState<Subdivision>('quarter');
+  const [subdivision, setSubdivisionState] = useState<Subdivision>(
+    () => savedRef.current.subdivision ?? 'quarter'
+  );
   const beatsPerMeasure = 4;
 
   // Timer state
-  const [timer, setTimer] = useState<TimerState>({
-    enabled: false,
-    loop: false,
-    durationMinutes: 5,
-    remainingSeconds: 300,
-    isFinished: false,
-    lapCount: 0,
+  const [timer, setTimer] = useState<TimerState>(() => {
+    const saved = savedRef.current.timer;
+    const durationMinutes = saved?.durationMinutes ?? 5;
+    return {
+      enabled: saved?.enabled ?? false,
+      loop: saved?.loop ?? false,
+      durationMinutes,
+      remainingSeconds: durationMinutes * 60,
+      isFinished: false,
+      lapCount: 0,
+    };
   });
   const timerRef = useRef(timer);
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Auto BPM state
-  const [autoBpm, setAutoBpm] = useState<AutoBpmState>({
+  const [autoBpm, setAutoBpm] = useState<AutoBpmState>(() => ({
     enabled: false,
     intervalSeconds: 30,
     incrementAmount: 5,
     maxBpm: 200,
-  });
+    ...savedRef.current.autoBpm,
+  }));
   const autoBpmRef = useRef(autoBpm);
   const autoBpmTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -71,6 +98,25 @@ export function useMetronome() {
   useEffect(() => { subdivisionRef.current = subdivision; }, [subdivision]);
   useEffect(() => { timerRef.current = timer; }, [timer]);
   useEffect(() => { autoBpmRef.current = autoBpm; }, [autoBpm]);
+
+  // 設定を localStorage に保存（リロード後も復元される）
+  useEffect(() => {
+    const settings: PersistedSettings = {
+      bpm,
+      subdivision,
+      timer: {
+        enabled: timer.enabled,
+        loop: timer.loop,
+        durationMinutes: timer.durationMinutes,
+      },
+      autoBpm,
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    } catch {
+      // ストレージ不可の環境では無視
+    }
+  }, [bpm, subdivision, timer.enabled, timer.loop, timer.durationMinutes, autoBpm]);
 
   const getAudioContext = useCallback(() => {
     if (!audioCtxRef.current) {
@@ -264,6 +310,10 @@ export function useMetronome() {
     setBpmState(Math.min(240, Math.max(40, value)));
   }, []);
 
+  const adjustBpm = useCallback((delta: number) => {
+    setBpmState(prev => Math.min(240, Math.max(40, prev + delta)));
+  }, []);
+
   const setSubdivision = useCallback((value: Subdivision) => {
     setSubdivisionState(value);
     // Reset tick counter so subdivisions align with next beat
@@ -335,6 +385,7 @@ export function useMetronome() {
     play,
     stop,
     setBpm,
+    adjustBpm,
     setSubdivision,
     tapTempo,
     updateTimer,
