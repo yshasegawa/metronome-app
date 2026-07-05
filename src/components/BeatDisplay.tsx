@@ -14,7 +14,7 @@ export function BeatDisplay({ currentBeat, beatsPerMeasure, isPlaying }: BeatDis
           <div
             key={i}
             className={`
-              w-12 h-12 rounded-full border-2 transition-all duration-75
+              w-10 h-10 sm:w-12 sm:h-12 rounded-full border-2 transition-all duration-75
               ${isActive
                 ? isAccent
                   ? 'bg-violet-400 border-violet-300 shadow-[0_0_20px_rgba(167,139,250,0.8)] scale-110'

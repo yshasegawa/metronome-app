@@ -34,16 +34,16 @@ function App() {
   const toggle = () => (isPlaying ? stop() : play());
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-900 to-[#0f0f13] flex flex-col items-center py-10 px-4">
-      <h1 className="text-2xl font-bold text-slate-200 tracking-widest uppercase mb-8">
+    <div className="min-h-screen bg-gradient-to-b from-slate-900 to-[#0f0f13] flex flex-col items-center py-4 sm:py-10 px-4">
+      <h1 className="text-xl sm:text-2xl font-bold text-slate-200 tracking-widest uppercase mb-3 sm:mb-8">
         Metronome
       </h1>
 
       {/* BPM Display */}
-      <div className="mb-6 text-center">
+      <div className="mb-3 sm:mb-6 text-center">
         <div
           className={`
-            text-9xl font-black tabular-nums transition-all duration-100 select-none leading-none
+            text-7xl sm:text-9xl font-black tabular-nums transition-all duration-100 select-none leading-none
             ${isPlaying ? 'text-slate-100' : 'text-slate-400'}
           `}
         >
@@ -55,7 +55,7 @@ function App() {
       </div>
 
       {/* Beat Display */}
-      <div className="mb-6">
+      <div className="mb-3 sm:mb-6">
         <BeatDisplay
           currentBeat={currentBeat}
           beatsPerMeasure={beatsPerMeasure}
@@ -64,7 +64,7 @@ function App() {
       </div>
 
       {/* Subdivision selector */}
-      <div className="w-full max-w-md mb-6">
+      <div className="w-full max-w-md mb-3 sm:mb-6">
         <p className="text-slate-500 text-xs uppercase tracking-widest text-center mb-2">音符の種類</p>
         <div className="grid grid-cols-4 gap-2">
           {SUBDIVISION_OPTIONS.map(opt => (
@@ -72,7 +72,7 @@ function App() {
               key={opt.value}
               onClick={() => setSubdivision(opt.value)}
               className={`
-                flex flex-col items-center py-2.5 px-1 rounded-xl border transition-all
+                flex flex-col items-center py-1.5 sm:py-2.5 px-1 rounded-xl border transition-all
                 ${subdivision === opt.value
                   ? 'bg-violet-600/30 border-violet-500 text-violet-300'
                   : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-300'
@@ -87,18 +87,18 @@ function App() {
       </div>
 
       {/* BPM Controls */}
-      <div className="w-full max-w-md mb-6 space-y-3">
+      <div className="w-full max-w-md mb-3 sm:mb-6 space-y-2 sm:space-y-3">
         {/* BPM step buttons */}
         <div className="flex justify-center gap-3">
           <button
             onClick={() => adjustBpm(-4)}
-            className="px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-lg border border-slate-600 hover:border-slate-500 transition-all active:scale-95"
+            className="px-6 py-1.5 sm:py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-lg border border-slate-600 hover:border-slate-500 transition-all active:scale-95"
           >
             −4
           </button>
           <button
             onClick={() => adjustBpm(2)}
-            className="px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-lg border border-slate-600 hover:border-slate-500 transition-all active:scale-95"
+            className="px-6 py-1.5 sm:py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-lg border border-slate-600 hover:border-slate-500 transition-all active:scale-95"
           >
             +2
           </button>
@@ -144,7 +144,7 @@ function App() {
       </div>
 
       {/* Play / Stop + Tap */}
-      <div className="flex items-center gap-4 mb-10">
+      <div className="flex items-center gap-4 mb-4 sm:mb-10">
         <button
           onClick={tapTempo}
           className="px-6 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-sm border border-slate-600 hover:border-slate-500 transition-all active:scale-95"
@@ -155,7 +155,7 @@ function App() {
         <button
           onClick={toggle}
           className={`
-            w-20 h-20 rounded-full font-bold text-lg transition-all duration-150 active:scale-95 shadow-lg
+            w-16 h-16 sm:w-20 sm:h-20 rounded-full font-bold text-lg transition-all duration-150 active:scale-95 shadow-lg
             ${isPlaying
               ? 'bg-slate-700 hover:bg-slate-600 text-slate-200 border-2 border-slate-500'
               : 'bg-violet-600 hover:bg-violet-500 text-white border-2 border-violet-400 shadow-violet-900/50'

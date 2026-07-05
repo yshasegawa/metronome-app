@@ -1,7 +1,26 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 
 const SCHEDULE_AHEAD = 0.1; // seconds to schedule ahead
+const SCHEDULE_AHEAD_HIDDEN = 0.6; // バックグラウンド時はティックが遅延しても途切れないよう長めに先読み
 const LOOKAHEAD = 25; // ms interval for scheduler
+
+// メインスレッドの setInterval はバックグラウンドで間引かれるため、
+// スケジューラのティックは Web Worker（間引き対象外）で刻む
+const TICK_WORKER_CODE = `
+let timer = null;
+onmessage = (e) => {
+  if (e.data === 'start') {
+    if (!timer) timer = setInterval(() => postMessage(0), ${LOOKAHEAD});
+  } else {
+    clearInterval(timer);
+    timer = null;
+  }
+};
+`;
+
+// iOS Safari でバックグラウンド時に AudioContext が停止されるのを防ぐための無音WAV（8bit/8kHz/4サンプル）
+const SILENT_WAV =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA';
 
 export type Subdivision = 'quarter' | 'eighth' | 'sixteenth' | 'triplet';
 
@@ -50,7 +69,8 @@ export function useMetronome() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const nextBeatTimeRef = useRef(0);
   const currentTickRef = useRef(0); // counts individual ticks (beat * subdivCount + subdivIndex)
-  const schedulerTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tickWorkerRef = useRef<Worker | null>(null);
+  const silentAudioRef = useRef<HTMLAudioElement | null>(null);
   const isPlayingRef = useRef(false);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
@@ -177,7 +197,8 @@ export function useMetronome() {
     const ctx = audioCtxRef.current;
     if (!ctx) return;
 
-    while (nextBeatTimeRef.current < ctx.currentTime + SCHEDULE_AHEAD) {
+    const scheduleAhead = document.hidden ? SCHEDULE_AHEAD_HIDDEN : SCHEDULE_AHEAD;
+    while (nextBeatTimeRef.current < ctx.currentTime + scheduleAhead) {
       const subdivCount = SUBDIVISION_COUNT[subdivisionRef.current];
       const totalTicks = beatsPerMeasure * subdivCount;
       const tick = currentTickRef.current % totalTicks;
@@ -277,28 +298,48 @@ export function useMetronome() {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && isPlayingRef.current) {
         acquireWakeLock();
+        // バックグラウンド中に停止された場合に備えて再開
+        if (audioCtxRef.current?.state === 'suspended') {
+          audioCtxRef.current.resume();
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [acquireWakeLock]);
 
+  const getTickWorker = useCallback(() => {
+    if (!tickWorkerRef.current) {
+      const blob = new Blob([TICK_WORKER_CODE], { type: 'application/javascript' });
+      tickWorkerRef.current = new Worker(URL.createObjectURL(blob));
+    }
+    return tickWorkerRef.current;
+  }, []);
+
   const play = useCallback(() => {
     const ctx = getAudioContext();
     isPlayingRef.current = true;
     currentTickRef.current = 0;
     nextBeatTimeRef.current = ctx.currentTime + 0.05;
-    schedulerTimerRef.current = setInterval(scheduler, LOOKAHEAD);
+    const worker = getTickWorker();
+    worker.onmessage = scheduler;
+    worker.postMessage('start');
+    if (!silentAudioRef.current) {
+      silentAudioRef.current = new Audio(SILENT_WAV);
+      silentAudioRef.current.loop = true;
+    }
+    silentAudioRef.current.play().catch(() => {});
     setIsPlaying(true);
     setCurrentBeat(0);
     if (timerRef.current.enabled && !timerRef.current.isFinished) startTimer();
     if (autoBpmRef.current.enabled) startAutoBpm();
     acquireWakeLock();
-  }, [getAudioContext, scheduler, startTimer, startAutoBpm, acquireWakeLock]);
+  }, [getAudioContext, getTickWorker, scheduler, startTimer, startAutoBpm, acquireWakeLock]);
 
   const stop = useCallback(() => {
     isPlayingRef.current = false;
-    if (schedulerTimerRef.current) { clearInterval(schedulerTimerRef.current); schedulerTimerRef.current = null; }
+    tickWorkerRef.current?.postMessage('stop');
+    silentAudioRef.current?.pause();
     if (timerIntervalRef.current) { clearInterval(timerIntervalRef.current); timerIntervalRef.current = null; }
     if (autoBpmTimerRef.current) { clearInterval(autoBpmTimerRef.current); autoBpmTimerRef.current = null; }
     setIsPlaying(false);
