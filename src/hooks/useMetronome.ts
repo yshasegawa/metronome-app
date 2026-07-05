@@ -197,6 +197,12 @@ export function useMetronome() {
     const ctx = audioCtxRef.current;
     if (!ctx) return;
 
+    // BPM 0 はテンポを刻まない（タイマーのみ動作）。再開時に備えて基準時刻を進めておく
+    if (bpmRef.current <= 0) {
+      nextBeatTimeRef.current = ctx.currentTime + 0.05;
+      return;
+    }
+
     const scheduleAhead = document.hidden ? SCHEDULE_AHEAD_HIDDEN : SCHEDULE_AHEAD;
     while (nextBeatTimeRef.current < ctx.currentTime + scheduleAhead) {
       const subdivCount = SUBDIVISION_COUNT[subdivisionRef.current];
@@ -316,8 +322,17 @@ export function useMetronome() {
     return tickWorkerRef.current;
   }, []);
 
-  const play = useCallback(() => {
-    const ctx = getAudioContext();
+  const play = useCallback(async () => {
+    let ctx = getAudioContext();
+    // スリープ後は resume が完了するまで待つ。復帰できない場合（iOSで
+    // オーディオセッションが失われた場合など）はコンテキストを作り直す
+    try { await ctx.resume(); } catch { /* ignore */ }
+    if (ctx.state !== 'running') {
+      try { ctx.close(); } catch { /* ignore */ }
+      audioCtxRef.current = new AudioContext();
+      ctx = audioCtxRef.current;
+      try { await ctx.resume(); } catch { /* ignore */ }
+    }
     isPlayingRef.current = true;
     currentTickRef.current = 0;
     nextBeatTimeRef.current = ctx.currentTime + 0.05;
@@ -330,7 +345,7 @@ export function useMetronome() {
     }
     silentAudioRef.current.play().catch(() => {});
     setIsPlaying(true);
-    setCurrentBeat(0);
+    setCurrentBeat(bpmRef.current > 0 ? 0 : -1);
     if (timerRef.current.enabled && !timerRef.current.isFinished) startTimer();
     if (autoBpmRef.current.enabled) startAutoBpm();
     acquireWakeLock();
@@ -347,12 +362,13 @@ export function useMetronome() {
     releaseWakeLock();
   }, [releaseWakeLock]);
 
+  // BPM 0 は「テンポを刻まずタイマーのみ動作」の特別値として許可
   const setBpm = useCallback((value: number) => {
-    setBpmState(Math.min(240, Math.max(40, value)));
+    setBpmState(Math.min(240, Math.max(0, value)));
   }, []);
 
   const adjustBpm = useCallback((delta: number) => {
-    setBpmState(prev => Math.min(240, Math.max(40, prev + delta)));
+    setBpmState(prev => Math.min(240, Math.max(0, prev + delta)));
   }, []);
 
   const setSubdivision = useCallback((value: Subdivision) => {

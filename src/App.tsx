@@ -52,6 +52,9 @@ function App() {
         <div className="text-slate-500 text-sm font-medium tracking-widest uppercase mt-1">
           BPM
         </div>
+        {bpm === 0 && (
+          <p className="text-amber-400/80 text-xs mt-1">テンポなし（タイマーのみ）</p>
+        )}
       </div>
 
       {/* Beat Display */}
@@ -107,7 +110,7 @@ function App() {
         <div className="flex items-center gap-4">
           <input
             type="range"
-            min={40}
+            min={0}
             max={240}
             value={bpm}
             onChange={e => setBpm(Number(e.target.value))}
@@ -115,7 +118,7 @@ function App() {
           />
           <input
             type="number"
-            min={40}
+            min={0}
             max={240}
             value={bpm}
             onChange={e => setBpm(Number(e.target.value))}
