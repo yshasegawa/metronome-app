@@ -105,6 +105,18 @@ function App() {
           >
             +2
           </button>
+          <button
+            onClick={() => setBpm(0)}
+            className={`
+              px-6 py-1.5 sm:py-2.5 rounded-xl font-bold text-lg border transition-all active:scale-95
+              ${bpm === 0
+                ? 'bg-amber-500/20 border-amber-500 text-amber-300'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-600 hover:border-slate-500'
+              }
+            `}
+          >
+            0
+          </button>
         </div>
 
         <div className="flex items-center gap-4">

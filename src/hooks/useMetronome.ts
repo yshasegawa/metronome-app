@@ -18,6 +18,12 @@ onmessage = (e) => {
 };
 `;
 
+// BPM は 0（テンポなし・タイマーのみ）または 40〜240 のみ許可。中間値は近い方に丸める
+function snapBpm(value: number): number {
+  if (value >= 40) return Math.min(240, value);
+  return value < 20 ? 0 : 40;
+}
+
 // iOS Safari でバックグラウンド時に AudioContext が停止されるのを防ぐための無音WAV（8bit/8kHz/4サンプル）
 const SILENT_WAV =
   'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA';
@@ -77,7 +83,7 @@ export function useMetronome() {
   const savedRef = useRef(loadSettings());
 
   const [isPlaying, setIsPlaying] = useState(false);
-  const [bpm, setBpmState] = useState(() => savedRef.current.bpm ?? 120);
+  const [bpm, setBpmState] = useState(() => snapBpm(savedRef.current.bpm ?? 120));
   const [currentBeat, setCurrentBeat] = useState(0);
   const [subdivision, setSubdivisionState] = useState<Subdivision>(
     () => savedRef.current.subdivision ?? 'quarter'
@@ -362,13 +368,13 @@ export function useMetronome() {
     releaseWakeLock();
   }, [releaseWakeLock]);
 
-  // BPM 0 は「テンポを刻まずタイマーのみ動作」の特別値として許可
   const setBpm = useCallback((value: number) => {
-    setBpmState(Math.min(240, Math.max(0, value)));
+    setBpmState(snapBpm(value));
   }, []);
 
   const adjustBpm = useCallback((delta: number) => {
-    setBpmState(prev => Math.min(240, Math.max(0, prev + delta)));
+    // 0 から増やす場合は最小テンポの 40 に復帰させる
+    setBpmState(prev => (prev === 0 && delta > 0 ? 40 : snapBpm(prev + delta)));
   }, []);
 
   const setSubdivision = useCallback((value: Subdivision) => {
