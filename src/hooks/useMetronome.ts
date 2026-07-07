@@ -164,17 +164,6 @@ export function useMetronome() {
     masterGainRef.current = master;
   }, []);
 
-  const getAudioContext = useCallback(() => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new AudioContext();
-      setupAudioGraph(audioCtxRef.current);
-    }
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume();
-    }
-    return audioCtxRef.current;
-  }, [setupAudioGraph]);
-
   // tickType: 'accent' | 'beat' | 'subdiv'
   const scheduleClick = useCallback((tickType: 'accent' | 'beat' | 'subdiv', time: number) => {
     const ctx = audioCtxRef.current;
@@ -363,36 +352,42 @@ export function useMetronome() {
     const audioSession = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
     if (audioSession) audioSession.type = 'playback';
 
-    let ctx = getAudioContext();
-    // スリープ復帰後は resume がハングすることがあるため、タイムアウト付きで待ち、
-    // running に戻らなければコンテキストを作り直す
-    if (ctx.state !== 'running') await resumeWithTimeout(ctx);
-    if (ctx.state !== 'running') {
-      try { ctx.close(); } catch { /* ignore */ }
-      audioCtxRef.current = new AudioContext();
-      ctx = audioCtxRef.current;
-      setupAudioGraph(ctx);
-      await resumeWithTimeout(ctx);
-    }
+    // 先に再生状態を反映（オーディオの立ち上げ中でもUIが即座に応答するように）
+    isPlayingRef.current = true;
+    setIsPlaying(true);
 
-    // 出力用メディア要素の再生を開始。失敗した場合は直接出力にフォールバック
-    try {
-      await streamAudioRef.current?.play();
-    } catch {
-      const master = masterGainRef.current;
-      if (master) {
+    // スリープ後は既存コンテキストが「running」を装ったまま音が出ない
+    // （ゾンビ化する）ことがあり、状態からは判別できないため、再生のたびに作り直す
+    try { audioCtxRef.current?.close().catch(() => {}); } catch { /* ignore */ }
+    const ctx = new AudioContext();
+    audioCtxRef.current = ctx;
+    setupAudioGraph(ctx);
+    if (ctx.state !== 'running') await resumeWithTimeout(ctx);
+
+    // 出力用メディア要素の再生を開始。play() 自体がハングすることもあるため
+    // タイムアウトを設け、間に合わなければ直接出力にフォールバック
+    const el = streamAudioRef.current;
+    const master = masterGainRef.current;
+    if (el && master) {
+      const ok = await Promise.race([
+        el.play().then(() => true, () => false),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 400)),
+      ]);
+      if (!ok) {
+        el.pause(); // 遅れて再生が始まって二重出力になるのを防ぐ
         master.disconnect();
         master.connect(ctx.destination);
       }
     }
 
-    isPlayingRef.current = true;
+    // 立ち上げ中に停止された場合はここで打ち切る
+    if (!isPlayingRef.current) return;
+
     currentTickRef.current = 0;
     nextBeatTimeRef.current = ctx.currentTime + 0.05;
     const worker = getTickWorker();
     worker.onmessage = scheduler;
     worker.postMessage('start');
-    setIsPlaying(true);
     setCurrentBeat(bpmRef.current > 0 ? 0 : -1);
     if (timerRef.current.enabled && !timerRef.current.isFinished) startTimer();
     if (autoBpmRef.current.enabled) startAutoBpm();
@@ -407,7 +402,7 @@ export function useMetronome() {
         navigator.mediaSession.setActionHandler('pause', () => stopFnRef.current());
       } catch { /* 非対応アクションは無視 */ }
     }
-  }, [getAudioContext, getTickWorker, setupAudioGraph, scheduler, startTimer, startAutoBpm, acquireWakeLock]);
+  }, [getTickWorker, setupAudioGraph, scheduler, startTimer, startAutoBpm, acquireWakeLock]);
 
   const stop = useCallback(() => {
     isPlayingRef.current = false;
