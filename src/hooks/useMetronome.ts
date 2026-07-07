@@ -24,9 +24,13 @@ function snapBpm(value: number): number {
   return value < 20 ? 0 : 40;
 }
 
-// iOS Safari でバックグラウンド時に AudioContext が停止されるのを防ぐための無音WAV（8bit/8kHz/4サンプル）
-const SILENT_WAV =
-  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA';
+// iOS でスリープ復帰後の resume() が完了しないことがあるため、タイムアウト付きで待つ
+function resumeWithTimeout(ctx: AudioContext, ms = 300): Promise<void> {
+  return Promise.race([
+    ctx.resume().catch(() => {}),
+    new Promise<void>(resolve => setTimeout(resolve, ms)),
+  ]);
+}
 
 export type Subdivision = 'quarter' | 'eighth' | 'sixteenth' | 'triplet';
 
@@ -76,7 +80,8 @@ export function useMetronome() {
   const nextBeatTimeRef = useRef(0);
   const currentTickRef = useRef(0); // counts individual ticks (beat * subdivCount + subdivIndex)
   const tickWorkerRef = useRef<Worker | null>(null);
-  const silentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const masterGainRef = useRef<GainNode | null>(null);
+  const streamAudioRef = useRef<HTMLAudioElement | null>(null);
   const isPlayingRef = useRef(false);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
@@ -144,20 +149,37 @@ export function useMetronome() {
     }
   }, [bpm, subdivision, timer.enabled, timer.loop, timer.durationMinutes, autoBpm]);
 
+  // 全クリック音は master ゲイン → MediaStream → <audio> 要素経由で出力する。
+  // iOS は Web Audio の直接出力をバックグラウンドで停止するが、
+  // メディア要素の再生は継続するため、この経路なら音が鳴り続ける
+  const setupAudioGraph = useCallback((ctx: AudioContext) => {
+    const master = ctx.createGain();
+    const streamDest = ctx.createMediaStreamDestination();
+    master.connect(streamDest);
+    if (!streamAudioRef.current) {
+      streamAudioRef.current = new Audio();
+      streamAudioRef.current.setAttribute('playsinline', '');
+    }
+    streamAudioRef.current.srcObject = streamDest.stream;
+    masterGainRef.current = master;
+  }, []);
+
   const getAudioContext = useCallback(() => {
     if (!audioCtxRef.current) {
       audioCtxRef.current = new AudioContext();
+      setupAudioGraph(audioCtxRef.current);
     }
     if (audioCtxRef.current.state === 'suspended') {
       audioCtxRef.current.resume();
     }
     return audioCtxRef.current;
-  }, []);
+  }, [setupAudioGraph]);
 
   // tickType: 'accent' | 'beat' | 'subdiv'
   const scheduleClick = useCallback((tickType: 'accent' | 'beat' | 'subdiv', time: number) => {
     const ctx = audioCtxRef.current;
-    if (!ctx) return;
+    const master = masterGainRef.current;
+    if (!ctx || !master) return;
 
     const config = {
       accent: { freqStart: 2800, freqEnd: 1600, duration: 0.055, gain: 1.4 },
@@ -174,7 +196,7 @@ export function useMetronome() {
     noiseSource.buffer = noiseBuffer;
     const noiseGain = ctx.createGain();
     noiseSource.connect(noiseGain);
-    noiseGain.connect(ctx.destination);
+    noiseGain.connect(master);
     const noiseLevel = tickType === 'subdiv' ? 0.15 : 0.3;
     noiseGain.gain.setValueAtTime(noiseLevel, time);
     noiseGain.gain.exponentialRampToValueAtTime(0.001, time + 0.015);
@@ -185,7 +207,7 @@ export function useMetronome() {
     const oscillator = ctx.createOscillator();
     const gainNode = ctx.createGain();
     oscillator.connect(gainNode);
-    gainNode.connect(ctx.destination);
+    gainNode.connect(master);
 
     oscillator.type = 'triangle';
     oscillator.frequency.setValueAtTime(config.freqStart, time);
@@ -241,13 +263,14 @@ export function useMetronome() {
 
   const playTimerBeep = useCallback(() => {
     const ctx = audioCtxRef.current;
-    if (!ctx) return;
+    const master = masterGainRef.current;
+    if (!ctx || !master) return;
     const now = ctx.currentTime;
     for (let i = 0; i < 3; i++) {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(master);
       osc.type = 'sine';
       osc.frequency.setValueAtTime(880, now + i * 0.3);
       gain.gain.setValueAtTime(0, now + i * 0.3);
@@ -311,8 +334,11 @@ export function useMetronome() {
       if (document.visibilityState === 'visible' && isPlayingRef.current) {
         acquireWakeLock();
         // バックグラウンド中に停止された場合に備えて再開
-        if (audioCtxRef.current?.state === 'suspended') {
-          audioCtxRef.current.resume();
+        if (audioCtxRef.current && audioCtxRef.current.state !== 'running') {
+          audioCtxRef.current.resume().catch(() => {});
+        }
+        if (streamAudioRef.current?.paused) {
+          streamAudioRef.current.play().catch(() => {});
         }
       }
     };
@@ -328,45 +354,79 @@ export function useMetronome() {
     return tickWorkerRef.current;
   }, []);
 
+  // MediaSession ハンドラから最新の play/stop を呼ぶための参照
+  const playFnRef = useRef<() => void>(() => {});
+  const stopFnRef = useRef<() => void>(() => {});
+
   const play = useCallback(async () => {
+    // Safari: バックグラウンドやサイレントスイッチONでも再生を続ける宣言
+    const audioSession = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
+    if (audioSession) audioSession.type = 'playback';
+
     let ctx = getAudioContext();
-    // スリープ後は resume が完了するまで待つ。復帰できない場合（iOSで
-    // オーディオセッションが失われた場合など）はコンテキストを作り直す
-    try { await ctx.resume(); } catch { /* ignore */ }
+    // スリープ復帰後は resume がハングすることがあるため、タイムアウト付きで待ち、
+    // running に戻らなければコンテキストを作り直す
+    if (ctx.state !== 'running') await resumeWithTimeout(ctx);
     if (ctx.state !== 'running') {
       try { ctx.close(); } catch { /* ignore */ }
       audioCtxRef.current = new AudioContext();
       ctx = audioCtxRef.current;
-      try { await ctx.resume(); } catch { /* ignore */ }
+      setupAudioGraph(ctx);
+      await resumeWithTimeout(ctx);
     }
+
+    // 出力用メディア要素の再生を開始。失敗した場合は直接出力にフォールバック
+    try {
+      await streamAudioRef.current?.play();
+    } catch {
+      const master = masterGainRef.current;
+      if (master) {
+        master.disconnect();
+        master.connect(ctx.destination);
+      }
+    }
+
     isPlayingRef.current = true;
     currentTickRef.current = 0;
     nextBeatTimeRef.current = ctx.currentTime + 0.05;
     const worker = getTickWorker();
     worker.onmessage = scheduler;
     worker.postMessage('start');
-    if (!silentAudioRef.current) {
-      silentAudioRef.current = new Audio(SILENT_WAV);
-      silentAudioRef.current.loop = true;
-    }
-    silentAudioRef.current.play().catch(() => {});
     setIsPlaying(true);
     setCurrentBeat(bpmRef.current > 0 ? 0 : -1);
     if (timerRef.current.enabled && !timerRef.current.isFinished) startTimer();
     if (autoBpmRef.current.enabled) startAutoBpm();
     acquireWakeLock();
-  }, [getAudioContext, getTickWorker, scheduler, startTimer, startAutoBpm, acquireWakeLock]);
+
+    // ロック画面・コントロールセンターの再生/停止に対応
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: 'Metronome' });
+      navigator.mediaSession.playbackState = 'playing';
+      try {
+        navigator.mediaSession.setActionHandler('play', () => playFnRef.current());
+        navigator.mediaSession.setActionHandler('pause', () => stopFnRef.current());
+      } catch { /* 非対応アクションは無視 */ }
+    }
+  }, [getAudioContext, getTickWorker, setupAudioGraph, scheduler, startTimer, startAutoBpm, acquireWakeLock]);
 
   const stop = useCallback(() => {
     isPlayingRef.current = false;
     tickWorkerRef.current?.postMessage('stop');
-    silentAudioRef.current?.pause();
+    streamAudioRef.current?.pause();
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'paused';
+    }
     if (timerIntervalRef.current) { clearInterval(timerIntervalRef.current); timerIntervalRef.current = null; }
     if (autoBpmTimerRef.current) { clearInterval(autoBpmTimerRef.current); autoBpmTimerRef.current = null; }
     setIsPlaying(false);
     setCurrentBeat(-1);
     releaseWakeLock();
   }, [releaseWakeLock]);
+
+  useEffect(() => {
+    playFnRef.current = play;
+    stopFnRef.current = stop;
+  }, [play, stop]);
 
   const setBpm = useCallback((value: number) => {
     setBpmState(snapBpm(value));
