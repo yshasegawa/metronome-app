@@ -1,7 +1,9 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 
-const SCHEDULE_AHEAD = 0.1; // seconds to schedule ahead
-const SCHEDULE_AHEAD_HIDDEN = 0.6; // バックグラウンド時はティックが遅延しても途切れないよう長めに先読み
+// 先読み時間。短いとUIの引っかかり等でスケジュールが間に合わず音が遅れるため、
+// BPM変更の反応が損なわれない範囲で長めに取る
+const SCHEDULE_AHEAD = 0.2;
+const SCHEDULE_AHEAD_HIDDEN = 1.0; // バックグラウンド時はティックが遅延しても途切れないようさらに長めに
 const LOOKAHEAD = 25; // ms interval for scheduler
 
 // メインスレッドの setInterval はバックグラウンドで間引かれるため、
@@ -218,6 +220,13 @@ export function useMetronome() {
     if (bpmRef.current <= 0) {
       nextBeatTimeRef.current = ctx.currentTime + 0.05;
       return;
+    }
+
+    // 画面ロックや割り込みなどでスケジューラが止まっていた場合、次拍時刻が過去に
+    // 取り残されており、そのまま追いつこうとすると溜まった拍が連打される
+    // （テンポと無関係な「タタタタ」音の原因）。大きく遅れているときは仕切り直す
+    if (nextBeatTimeRef.current < ctx.currentTime - 0.05) {
+      nextBeatTimeRef.current = ctx.currentTime + 0.05;
     }
 
     const scheduleAhead = document.hidden ? SCHEDULE_AHEAD_HIDDEN : SCHEDULE_AHEAD;
