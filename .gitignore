@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Claude Code の個人設定（プロジェクト設定 .claude/settings.json はコミットする）
+.claude/settings.local.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
