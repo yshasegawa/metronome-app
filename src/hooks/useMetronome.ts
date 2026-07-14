@@ -83,7 +83,10 @@ export function useMetronome() {
   const currentTickRef = useRef(0); // counts individual ticks (beat * subdivCount + subdivIndex)
   const tickWorkerRef = useRef<Worker | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
+  const directGainRef = useRef<GainNode | null>(null);
+  const streamGainRef = useRef<GainNode | null>(null);
   const streamAudioRef = useRef<HTMLAudioElement | null>(null);
+  const streamOkRef = useRef(true);
   const isPlayingRef = useRef(false);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
@@ -151,20 +154,39 @@ export function useMetronome() {
     }
   }, [bpm, subdivision, timer.enabled, timer.loop, timer.durationMinutes, autoBpm]);
 
-  // 全クリック音は master ゲイン → MediaStream → <audio> 要素経由で出力する。
-  // iOS は Web Audio の直接出力をバックグラウンドで停止するが、
-  // メディア要素の再生は継続するため、この経路なら音が鳴り続ける
+  // 出力は2経路を用意し、可視状態で切り替える:
+  // - フォアグラウンド: ctx.destination 直結（低遅延・安定）
+  // - バックグラウンド: MediaStream → <audio> 要素経由
+  //   （iOS は Web Audio の直接出力をバックグラウンドで停止するが、
+  //    メディア要素の再生は継続するため、この経路なら音が鳴り続ける）
+  // 常時 stream 経由にしないのは、メディア要素はストール後に溜まった音声を
+  // 時間圧縮して再生する（追いつき再生）ことがあり、フォアグラウンドで
+  // テンポと無関係な「タタタタ」連打の原因になるため
+  const applyOutputRouting = useCallback(() => {
+    const useStream = document.hidden && streamOkRef.current;
+    if (directGainRef.current) directGainRef.current.gain.value = useStream ? 0 : 1;
+    if (streamGainRef.current) streamGainRef.current.gain.value = useStream ? 1 : 0;
+  }, []);
+
   const setupAudioGraph = useCallback((ctx: AudioContext) => {
     const master = ctx.createGain();
+    const directGain = ctx.createGain();
+    const streamGain = ctx.createGain();
+    master.connect(directGain);
+    directGain.connect(ctx.destination);
     const streamDest = ctx.createMediaStreamDestination();
-    master.connect(streamDest);
+    master.connect(streamGain);
+    streamGain.connect(streamDest);
     if (!streamAudioRef.current) {
       streamAudioRef.current = new Audio();
       streamAudioRef.current.setAttribute('playsinline', '');
     }
     streamAudioRef.current.srcObject = streamDest.stream;
     masterGainRef.current = master;
-  }, []);
+    directGainRef.current = directGain;
+    streamGainRef.current = streamGain;
+    applyOutputRouting();
+  }, [applyOutputRouting]);
 
   // tickType: 'accent' | 'beat' | 'subdiv'
   const scheduleClick = useCallback((tickType: 'accent' | 'beat' | 'subdiv', time: number) => {
@@ -329,20 +351,22 @@ export function useMetronome() {
   // ページが再表示されたとき（バックグラウンドから復帰）に再取得
   useEffect(() => {
     const handleVisibilityChange = () => {
+      // 前面/背面の切り替えで出力経路を選び直す（前面=直接出力、背面=stream経由）
+      applyOutputRouting();
       if (document.visibilityState === 'visible' && isPlayingRef.current) {
         acquireWakeLock();
         // バックグラウンド中に停止された場合に備えて再開
         if (audioCtxRef.current && audioCtxRef.current.state !== 'running') {
           audioCtxRef.current.resume().catch(() => {});
         }
-        if (streamAudioRef.current?.paused) {
+        if (streamOkRef.current && streamAudioRef.current?.paused) {
           streamAudioRef.current.play().catch(() => {});
         }
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [acquireWakeLock]);
+  }, [acquireWakeLock, applyOutputRouting]);
 
   const getTickWorker = useCallback(() => {
     if (!tickWorkerRef.current) {
@@ -373,20 +397,17 @@ export function useMetronome() {
     setupAudioGraph(ctx);
     if (ctx.state !== 'running') await resumeWithTimeout(ctx);
 
-    // 出力用メディア要素の再生を開始。play() 自体がハングすることもあるため
-    // タイムアウトを設け、間に合わなければ直接出力にフォールバック
+    // バックグラウンド用メディア要素の再生を開始。play() 自体がハングすることも
+    // あるためタイムアウトを設け、失敗した場合は直接出力のみで動作させる
     const el = streamAudioRef.current;
-    const master = masterGainRef.current;
-    if (el && master) {
+    if (el) {
       const ok = await Promise.race([
         el.play().then(() => true, () => false),
         new Promise<boolean>(resolve => setTimeout(() => resolve(false), 400)),
       ]);
-      if (!ok) {
-        el.pause(); // 遅れて再生が始まって二重出力になるのを防ぐ
-        master.disconnect();
-        master.connect(ctx.destination);
-      }
+      streamOkRef.current = ok;
+      if (!ok) el.pause(); // 遅れて再生が始まるのを防ぐ
+      applyOutputRouting();
     }
 
     // 立ち上げ中に停止された場合はここで打ち切る
@@ -411,7 +432,7 @@ export function useMetronome() {
         navigator.mediaSession.setActionHandler('pause', () => stopFnRef.current());
       } catch { /* 非対応アクションは無視 */ }
     }
-  }, [getTickWorker, setupAudioGraph, scheduler, startTimer, startAutoBpm, acquireWakeLock]);
+  }, [getTickWorker, setupAudioGraph, applyOutputRouting, scheduler, startTimer, startAutoBpm, acquireWakeLock]);
 
   const stop = useCallback(() => {
     isPlayingRef.current = false;
